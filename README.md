@@ -69,11 +69,11 @@ Requirements:
 
 You can install `whisper-timestamped` either by using pip:
 ```bash
-pip3 install git+https://github.com/linto-ai/whisper-timestamped
+pip3 install git+https://github.com/traidn/whisper-timestamped
 ```
 or by cloning this repository and running installation:
 ```bash
-git clone https://github.com/linto-ai/whisper-timestamped
+git clone https://github.com/traidn/whisper-timestamped
 cd whisper-timestamped/
 python3 setup.py install
 ```
@@ -94,7 +94,7 @@ pip3 install torchaudio
 
 A docker image of about 9GB can be built using:
 ```bash
-git clone https://github.com/linto-ai/whisper-timestamped
+git clone https://github.com/traidn/whisper-timestamped
 cd whisper-timestamped/
 docker build -t whisper_timestamped:latest .
 ```
