@@ -1759,6 +1759,23 @@ def detect_non_silence(audio, chunk_len=10000, silence_thresh=-16, dilatation=1)
 
     return segments
 
+def is_overlaped(vad_segment, non_silence_segment, overlap_percent_thresh = 0.65):
+    dif = vad_segment["end"] - vad_segment["start"]
+    before_overlap = 0
+    after_overlap = 0
+    if vad_segment["start"] < non_silence_segment["start"]:
+        before_overlap = (vad_segment["end"] - non_silence_segment["start"])/dif
+
+    if vad_segment["end"] > non_silence_segment["end"]:
+        after_overlap = (non_silence_segment["end"] - vad_segment["start"])/dif
+
+    print(f"Before overlap = {before_overlap}, after overlap = {after_overlap}")
+    if before_overlap > overlap_percent_thresh or after_overlap > overlap_percent_thresh:
+        return True
+    else:
+        return False
+
+
 def compare_segments(vad_segments, non_silence_segments):
     if len(vad_segments) == 0 or len(non_silence_segments) == 0:
         return []
@@ -1767,7 +1784,8 @@ def compare_segments(vad_segments, non_silence_segments):
     new_segments = []
     for vad_segment in vad_segments:
         for index in range(start_index, len(non_silence_segments)):
-            if vad_segment["start"] >= non_silence_segments[index]["start"] and vad_segment["end"] <= non_silence_segments[index]["end"]:
+            if (vad_segment["start"] >= non_silence_segments[index]["start"] and vad_segment["end"] <= non_silence_segments[index]["end"]) \
+                    or is_overlaped(vad_segment, non_silence_segments[index], overlap_percent_thresh=0.85):
                 new_segments.append((vad_segment["start"], vad_segment["end"]))
                 start_index = index
                 break
@@ -1863,12 +1881,15 @@ def remove_non_speech(audio,
         min_silence_duration=min_silence_duration,
     )
     print("Seg from VAD", vad_segments)
+    print("Seg quantity", len(vad_segments))
 
     silence_det_seg = detect_non_silence(audio, silence_thresh=-40)
-    print("Seg from Silence det", silence_det_seg)
+    print("Seg from non_silence_detection", silence_det_seg)
+    print("Seg quantity", len(silence_det_seg))
 
     segments = compare_segments(vad_segments, silence_det_seg)
-    print(segments)
+    print("Result seg", segments)
+    print("Seg quantity", len(segments))
     # segments = [(seg["start"], seg["end"]) for seg in segments]
 
     if len(segments) == 0:
