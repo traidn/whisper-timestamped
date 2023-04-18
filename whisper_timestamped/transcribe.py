@@ -3,7 +3,7 @@
 __author__ = "Jérôme Louradour"
 __credits__ = ["Jérôme Louradour"]
 __license__ = "GPLv3"
-__version__ = "1.12.16"
+__version__ = "1.12.17"
 
 # Set some environment variables
 import os
@@ -1695,104 +1695,6 @@ def split_tokens_on_spaces(tokens: torch.Tensor, tokenizer, remove_punctuation_f
 
     return words, word_tokens, word_tokens_indices
 
-def db_to_float(db, using_amplitude=True):
-    """
-    Converts the input db to a float, which represents the equivalent
-    ratio in power.
-    """
-    db = float(db)
-    if using_amplitude:
-        return 10 ** (db / 20)
-    else:  # using power
-        return 10 ** (db / 10)
-
-def max_possible_amplitude(sample_width=2):
-    bits = sample_width * 8
-    max_possible_val = (2 ** bits)
-
-    # since half is above 0 and half is below the max amplitude is divided
-    return max_possible_val / 2
-
-def detect_non_silence(audio, chunk_len=10000, silence_thresh=-16, dilatation=1):
-    audio_len = len(audio)
-
-    # you can't have a silent portion of a sound that is longer than the sound
-    if audio_len < chunk_len:
-        return []
-
-    # convert silence threshold to a float value (so we can compare it to rms)
-    silence_thresh = db_to_float(silence_thresh) * 1
-
-    segments = []
-    segment_start = 0
-    segment_finish = 0
-    continious = False
-    for i in range(1, audio_len // chunk_len):
-        if torch.max(audio[(i-1)*chunk_len : (i)*chunk_len]).item() > silence_thresh:
-            if continious:
-                segment_finish = (i)*chunk_len
-            else:
-                segment_start = (i-1)*chunk_len
-                segment_finish = (i)*chunk_len
-                continious = True
-        else:
-            if continious:
-                continious = False
-                segments.append({"start": segment_start, "end": segment_finish})
-
-    if continious:
-        segments.append({"start": segment_start, "end": audio_len})
-
-    if dilatation > 0:
-        dilatation = round(dilatation * SAMPLE_RATE)
-        new_segments = []
-        for seg in segments:
-            new_seg = {
-                "start": max(0, seg["start"] - dilatation),
-                "end": min(len(audio), seg["end"] + dilatation)
-            }
-            if len(new_segments) > 0 and new_segments[-1]["end"] >= new_seg["start"]:
-                new_segments[-1]["end"] = new_seg["end"]
-            else:
-                new_segments.append(new_seg)
-        segments = new_segments
-
-    return segments
-
-def is_overlaped(vad_segment, non_silence_segment, overlap_percent_thresh = 0.65):
-    dif = vad_segment["end"] - vad_segment["start"]
-    before_overlap = 0
-    after_overlap = 0
-    if vad_segment["start"] < non_silence_segment["start"]:
-        before_overlap = (vad_segment["end"] - non_silence_segment["start"])/dif
-
-    if vad_segment["end"] > non_silence_segment["end"]:
-        after_overlap = (non_silence_segment["end"] - vad_segment["start"])/dif
-
-    print(f"Before overlap = {before_overlap}, after overlap = {after_overlap}")
-    if before_overlap > overlap_percent_thresh or after_overlap > overlap_percent_thresh:
-        return True
-    else:
-        return False
-
-
-def compare_segments(vad_segments, non_silence_segments):
-    if len(vad_segments) == 0 or len(non_silence_segments) == 0:
-        return []
-
-    start_index = 0
-    new_segments = []
-    for vad_segment in vad_segments:
-        for index in range(start_index, len(non_silence_segments)):
-            if (vad_segment["start"] >= non_silence_segments[index]["start"] and vad_segment["end"] <= non_silence_segments[index]["end"]) \
-                    or is_overlaped(vad_segment, non_silence_segments[index], overlap_percent_thresh=0.85):
-                new_segments.append((vad_segment["start"], vad_segment["end"]))
-                start_index = index
-                break
-
-    return new_segments
-
-
 silero_vad_model = None
 def get_vad_segments(audio,
     output_sample=False,
@@ -1814,27 +1716,30 @@ def get_vad_segments(audio,
         dilatation: float
             how much (in sec) to enlarge each speech segment detected by the VAD
     """
-    global silero_vad_model, silero_get_speech_ts
-
-    if silero_vad_model is None:
-        import onnxruntime
-        onnxruntime.set_default_logger_severity(3) # Remove warning "Removing initializer 'XXX'. It is not used by any node and should be removed from the model."
-        repo_or_dir = os.path.expanduser("~/.cache/torch/hub/snakers4_silero-vad_master")
-        source = "local"
-        if not os.path.exists(repo_or_dir):
-            repo_or_dir = "snakers4/silero-vad"
-            source = "github"
-        silero_vad_model, utils = torch.hub.load(repo_or_dir=repo_or_dir, model="silero_vad", onnx=True, source=source)
-        silero_get_speech_ts = utils[0]
+    import auditok
+    import io
+    import scipy.io.wavfile
 
     # Cheap normalization of the volume
     audio = audio / max(0.1, audio.abs().max())
 
-    segments = silero_get_speech_ts(audio, silero_vad_model,
-        min_speech_duration_ms = round(min_speech_duration * 1000),
-        min_silence_duration_ms = round(min_silence_duration * 1000),
-        return_seconds = False,
+    byte_io = io.BytesIO(bytes())
+    scipy.io.wavfile.write(byte_io, SAMPLE_RATE, (audio.numpy() * 32767).astype(np.int16))
+    bytes_wav = byte_io.read()
+
+    segments = auditok.split(
+        bytes_wav,
+        sampling_rate=SAMPLE_RATE,        # sampling frequency in Hz
+        channels=1,                       # number of channels
+        sample_width=2,                   # number of bytes per sample
+        min_dur=min_speech_duration,      # minimum duration of a valid audio event in seconds
+        max_dur=len(audio)/SAMPLE_RATE,   # maximum duration of an event
+        max_silence=min_silence_duration, # maximum duration of tolerated continuous silence within an event
+        energy_threshold=50,
+        drop_trailing_silence=True,
     )
+
+    segments = [{"start": s._meta.start * SAMPLE_RATE, "end": s._meta.end * SAMPLE_RATE} for s in segments]
 
     if dilatation > 0:
         dilatation = round(dilatation * SAMPLE_RATE)
@@ -1860,12 +1765,11 @@ def get_vad_segments(audio,
         for seg in segments:
             seg["start"] = round(seg["start"])
             seg["end"] = round(seg["end"])
-
     return segments
 
 def remove_non_speech(audio,
     use_sample=False,
-    min_speech_duration=0.25,
+    min_speech_duration=0.2,
     min_silence_duration=1,
     plot=False,
     ):
@@ -1874,24 +1778,15 @@ def remove_non_speech(audio,
     glue the speech segments together and return the result along with
     a function to convert timestamps from the new audio to the original audio
     """
-    vad_segments = get_vad_segments(
+
+    segments = get_vad_segments(
         audio,
         output_sample=True,
         min_speech_duration=min_speech_duration,
         min_silence_duration=min_silence_duration,
     )
-    print("Seg from VAD", vad_segments)
-    print("Seg quantity", len(vad_segments))
 
-    silence_det_seg = detect_non_silence(audio, silence_thresh=-40)
-    print("Seg from non_silence_detection", silence_det_seg)
-    print("Seg quantity", len(silence_det_seg))
-
-    segments = compare_segments(vad_segments, silence_det_seg)
-    print("Result seg", segments)
-    print("Seg quantity", len(segments))
-    # segments = [(seg["start"], seg["end"]) for seg in segments]
-
+    segments = [(seg["start"], seg["end"]) for seg in segments]
     if len(segments) == 0:
         return torch.zeros(1), [(0, 0)]
         segments = [(0, audio.shape[-1])]
@@ -1901,9 +1796,15 @@ def remove_non_speech(audio,
     if plot:
         import matplotlib.pyplot as plt
         plt.figure()
-        plt.plot(audio)
+        max_num_samples = 10000
+        step = (audio.shape[-1] // max_num_samples) + 1
+        plt.plot(
+            [i*step/SAMPLE_RATE for i in range(audio.shape[-1] // step + 1)],
+            audio[::step]
+        )
         for s,e in segments:
-            plt.axvspan(s, e, color='red', alpha=0.1)
+            plt.axvspan(s/SAMPLE_RATE, e/SAMPLE_RATE, color='red', alpha=0.1)
+        plt.xlabel("seconds")
         plt.show()
 
     if not use_sample:
