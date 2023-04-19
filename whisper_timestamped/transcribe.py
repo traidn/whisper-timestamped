@@ -1735,11 +1735,29 @@ def get_vad_segments(audio,
         min_dur=min_speech_duration,      # minimum duration of a valid audio event in seconds
         max_dur=len(audio)/SAMPLE_RATE,   # maximum duration of an event
         max_silence=min_silence_duration, # maximum duration of tolerated continuous silence within an event
-        energy_threshold=50,
+        energy_threshold=60,
         drop_trailing_silence=True,
     )
 
     segments = [{"start": s._meta.start * SAMPLE_RATE, "end": s._meta.end * SAMPLE_RATE} for s in segments]
+
+    #Mixing nearest segments
+    dif_thresh = 3
+    speech_timestamps = segments
+    mixed_timestamps = []
+    if len(speech_timestamps) > 1:
+        start_point = speech_timestamps[0]["start"]
+        end_point = speech_timestamps[0]["end"]
+        for i in range(len(speech_timestamps) - 1):
+            if speech_timestamps[i + 1]["start"] - end_point < (dif_thresh * 16000):
+                end_point = speech_timestamps[i + 1]["end"]
+            else:
+                mixed_timestamps.append({"start": start_point, "end": end_point})
+                start_point = speech_timestamps[i + 1]["start"]
+                end_point = speech_timestamps[i + 1]["end"]
+
+        mixed_timestamps.append({"start": start_point, "end": end_point})
+        segments = mixed_timestamps
 
     if dilatation > 0:
         dilatation = round(dilatation * SAMPLE_RATE)
@@ -1755,6 +1773,7 @@ def get_vad_segments(audio,
                 new_segments.append(new_seg)
         segments = new_segments
 
+
     ratio = 1 if output_sample else 1 / SAMPLE_RATE
 
     if ratio != 1:
@@ -1765,12 +1784,15 @@ def get_vad_segments(audio,
         for seg in segments:
             seg["start"] = round(seg["start"])
             seg["end"] = round(seg["end"])
+
+    sec_segments = [(el["start"]/16000, el["end"]/16000) for el in segments]
+    print(sec_segments)
     return segments
 
 def remove_non_speech(audio,
     use_sample=False,
     min_speech_duration=0.2,
-    min_silence_duration=1,
+    min_silence_duration=0.5,
     plot=False,
     ):
     """
@@ -1784,6 +1806,7 @@ def remove_non_speech(audio,
         output_sample=True,
         min_speech_duration=min_speech_duration,
         min_silence_duration=min_silence_duration,
+        dilatation=1,
     )
 
     segments = [(seg["start"], seg["end"]) for seg in segments]
